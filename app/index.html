@@ -4190,7 +4190,7 @@ function iniciarPagoWompi(){
     creadoEn:firebase.firestore.Timestamp.now(), estado:'iniciado'
   }).then(()=>{
     const params = new URLSearchParams({
-      'public-key': pub_prod_9dKruTqTlE5CWAxXs7yaeMsKzRvozmeM,
+      'public-key': WOMPI_PUBLIC_KEY,  // ✅ usa la variable ya definida arriba
       currency:'COP',
       'amount-in-cents': monto,
       reference: referencia,
