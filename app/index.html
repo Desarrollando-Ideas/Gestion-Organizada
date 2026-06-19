@@ -348,6 +348,9 @@ tr:hover td{background:rgba(18,32,22,.6)}
     </div>
 
     <div class="sidebar-bottom">
+      <a href="../" class="nav-item" style="text-decoration:none;margin-bottom:6px" title="Ir a la página principal">
+        <span class="ni">🏠</span><span class="nl">Página principal</span>
+      </a>
       <div class="user-card">
         <div class="user-avatar" id="sb-avatar">A</div>
         <div class="user-info">
@@ -4025,7 +4028,7 @@ const PLANES = {
 
 S.plan = { tipo:'gratis', vence:null, clientesUsados:0, ventasMes:0, ventasMesReset:'' };
 
-const WOMPI_PUBLIC_KEY = 'pub_prod_9dKruTqTlE5CWAxXs7yaeMsKzRvozmeM'; // ← Cambiar por tu llave real
+const WOMPI_PUBLIC_KEY = 'pub_prod_9dKruTqTlE5CWAxXs7yaeMsKzRvozmeM'; // Llave de producción
 
 async function loadPlan(){
   try{
@@ -4103,12 +4106,14 @@ function mostrarModalUpgrade(mensaje){
 }
 
 PAGE_TITLES['suscripcion'] = 'Mi Plan';
+PAGE_TITLES['admin-panel'] = 'Panel de Control';
 
 function injectPlanNavItem(){
   const nav = document.querySelector('.sidebar-nav');
   if(!nav || document.querySelector('[data-page="suscripcion"]')) return;
   const div = document.createElement('div');
-  div.innerHTML = `<div class="nav-section-label">Mi plan</div><div class="nav-item" data-page="suscripcion" onclick="go('suscripcion')"><span class="ni">⭐</span><span class="nl" id="sb-plan-label">${S.plan.tipo==='pro'?'Plan Pro ✓':'Actualizar plan'}</span></div>`;
+  const esDueno = S.user?.email === OWNER_EMAIL;
+  div.innerHTML = `<div class="nav-section-label">Mi plan</div><div class="nav-item" data-page="suscripcion" onclick="go('suscripcion')"><span class="ni">⭐</span><span class="nl" id="sb-plan-label">${S.plan.tipo==='pro'?'Plan Pro ✓':'Actualizar plan'}</span></div>${esDueno?'<div class="nav-item" data-page="admin-panel" onclick="go(\'admin-panel\')"><span class="ni">🛡️</span><span class="nl">Panel Maestro</span></div>':''}`;
   nav.appendChild(div);
 }
 
@@ -4190,7 +4195,7 @@ function iniciarPagoWompi(){
     creadoEn:firebase.firestore.Timestamp.now(), estado:'iniciado'
   }).then(()=>{
     const params = new URLSearchParams({
-      'public-key': WOMPI_PUBLIC_KEY,  // ✅ usa la variable ya definida arriba
+      'public-key': WOMPI_PUBLIC_KEY,
       currency:'COP',
       'amount-in-cents': monto,
       reference: referencia,
@@ -4239,18 +4244,38 @@ confirmarVenta = async function(){
   await registrarNuevaVenta();
 };
 
+const OWNER_EMAIL = 'julianrene113@gmail.com';
+
 const _enterApp_orig = enterApp;
 enterApp = async function(){
   _enterApp_orig();
   await loadPlan();
   injectPlanNavItem();
-  const gotoParam = new URLSearchParams(window.location.search).get('goto');
-  if(gotoParam){ window.history.replaceState({},'',window.location.pathname); go(gotoParam); }
   await verificarPagoWompi();
+  registrarEnMaestro();
+  const gotoParam = new URLSearchParams(window.location.search).get('goto');
+  if(gotoParam){
+    window.history.replaceState({},'',window.location.pathname);
+    if(gotoParam==='suscripcion'){
+      const unsub = db.collection('users/'+S.uid+'/clientes').onSnapshot(snap=>{
+        S.clientes = snap.docs.map(d=>({id:d.id,...d.data()}));
+        unsub();
+        go('suscripcion');
+      });
+    } else { go(gotoParam); }
+  }
 };
 
 const _go_orig = go;
 go = function(page, params={}){
+  if(page==='admin-panel'){
+    stopListeners(); S.page=page;
+    document.querySelectorAll('.nav-item[data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
+    document.getElementById('page-title').textContent='Panel de Control';
+    closeSidebar();
+    setTimeout(renderAdminPanel,100);
+    return;
+  }
   if(page==='suscripcion'){
     stopListeners(); S.page=page;
     document.querySelectorAll('.nav-item[data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
@@ -4262,6 +4287,131 @@ go = function(page, params={}){
   }
   _go_orig(page,params);
 };
+
+// ═══════════════════════════════════════════════════════════
+//  PANEL MAESTRO — Solo visible para el dueño del producto
+// ═══════════════════════════════════════════════════════════
+
+async function renderAdminPanel(){
+  const c = document.getElementById('content');
+  if(S.user?.email !== OWNER_EMAIL){
+    c.innerHTML='<div class="empty"><div class="empty-icon">🔒</div><p>Acceso restringido</p></div>';
+    return;
+  }
+  c.innerHTML = `
+  <div class="page-header"><h2>🛡️ Panel Maestro</h2></div>
+  <div class="stat-grid mb-4" id="pm-stats">
+    <div class="stat-card"><div class="sc-label">Negocios registrados</div><div class="sc-value" id="pm-total">…</div></div>
+    <div class="stat-card"><div class="sc-label">Plan Pro activos</div><div class="sc-value text-accent" id="pm-pro">…</div></div>
+    <div class="stat-card"><div class="sc-label">Plan Gratis</div><div class="sc-value" id="pm-gratis">…</div></div>
+    <div class="stat-card"><div class="sc-label">Ingresos estimados/mes</div><div class="sc-value text-accent" id="pm-ingresos">…</div></div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+    <input id="pm-search" placeholder="🔍 Buscar por correo…" oninput="renderPMTable()" style="max-width:260px"/>
+    <select id="pm-filter" onchange="renderPMTable()" style="width:auto">
+      <option value="">Todos los planes</option>
+      <option value="pro">Solo Pro</option>
+      <option value="gratis">Solo Gratis</option>
+    </select>
+  </div>
+  <div class="table-wrap" id="pm-table"><div class="empty"><div class="empty-icon">⏳</div><p>Cargando negocios…</p></div></div>`;
+
+  try{
+    const snap = await db.collection('master_registry').get();
+    window._pmData = snap.docs.map(d=>({uid:d.id,...d.data()}));
+    renderPMTable();
+    renderPMStats();
+  }catch(e){
+    document.getElementById('pm-table').innerHTML = `<div class="empty"><p style="color:var(--text3)">Sin datos aún. Los negocios aparecen aquí cuando se registran.</p></div>`;
+    renderPMStats([]);
+  }
+}
+
+function renderPMStats(data){
+  const list = data || window._pmData || [];
+  const pro = list.filter(d=>d.plan==='pro').length;
+  const gratis = list.filter(d=>d.plan!=='pro').length;
+  const el = id=>document.getElementById(id);
+  if(el('pm-total')) el('pm-total').textContent = list.length;
+  if(el('pm-pro'))   el('pm-pro').textContent   = pro;
+  if(el('pm-gratis'))el('pm-gratis').textContent = gratis;
+  if(el('pm-ingresos')) el('pm-ingresos').textContent = '$'+((pro*29900)/1000).toFixed(0)+'k';
+}
+
+function renderPMTable(){
+  const t = document.getElementById('pm-table'); if(!t) return;
+  let list = window._pmData || [];
+  const q = (document.getElementById('pm-search')?.value||'').toLowerCase();
+  const f = document.getElementById('pm-filter')?.value||'';
+  if(q) list = list.filter(d=>(d.email||'').toLowerCase().includes(q)||(d.bizName||'').toLowerCase().includes(q));
+  if(f) list = list.filter(d=>f==='pro'?d.plan==='pro':d.plan!=='pro');
+  if(!list.length){ t.innerHTML='<div class="empty" style="padding:20px"><p>Sin negocios encontrados</p></div>'; return; }
+  t.innerHTML = `<table>
+    <thead><tr><th>Negocio</th><th>Email</th><th>Plan</th><th>Vence</th><th>Registrado</th><th>Acciones</th></tr></thead>
+    <tbody>${list.map(d=>{
+      const esPro = d.plan==='pro';
+      const venceDate = d.planVence ? toDate({seconds:d.planVence}) : null;
+      const vencido = venceDate && venceDate < new Date();
+      return `<tr>
+        <td style="font-weight:600">${d.bizName||'Sin nombre'}</td>
+        <td class="text-sm text-muted">${d.email||'—'}</td>
+        <td><span class="badge ${esPro?'badge-gold':'badge-gray'}">${esPro?'Pro 👑':'Gratis'}</span>${vencido?'<span class="badge badge-red" style="margin-left:4px">Vencido</span>':''}</td>
+        <td class="text-sm text-muted">${venceDate?fmtDate({seconds:d.planVence}):'—'}</td>
+        <td class="text-xs text-muted">${d.creadoEn?fmtDate({seconds:d.creadoEn}):'—'}</td>
+        <td><div style="display:flex;gap:4px;flex-wrap:wrap">
+          ${!esPro||vencido
+            ?`<button class="btn btn-sm btn-gold" onclick="activarProManual('${d.uid}','${d.email||''}')">✓ Activar Pro</button>`
+            :`<button class="btn btn-sm btn-danger" onclick="desactivarPro('${d.uid}','${d.email||''}')">✗ Desactivar</button>`}
+        </div></td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+async function activarProManual(uid, email){
+  if(!uid){ toast('UID inválido','error'); return; }
+  confirmDialog(`¿Activar Plan Pro para <strong>${email||uid}</strong>? Se activará por 30 días.`, async()=>{
+    try{
+      const vence = new Date(); vence.setMonth(vence.getMonth()+1);
+      const venceTs = firebase.firestore.Timestamp.fromDate(vence);
+      await db.doc(`users/${uid}/plan/estado`).set({tipo:'pro', vence:venceTs, activadoEn:firebase.firestore.Timestamp.now(), activadoPor:'manual_admin'},{merge:true});
+      await db.doc(`master_registry/${uid}`).update({plan:'pro', planVence:venceTs.seconds, ultimaActualizacion:firebase.firestore.Timestamp.now().seconds});
+      const item = (window._pmData||[]).find(d=>d.uid===uid);
+      if(item){ item.plan='pro'; item.planVence=venceTs.seconds; }
+      renderPMTable(); renderPMStats();
+      toast(`✅ Plan Pro activado para ${email||uid} hasta ${fmtDate(venceTs)}`);
+    }catch(e){ toast('Error: '+e.message,'error'); }
+  });
+}
+
+async function desactivarPro(uid, email){
+  if(!uid){ toast('UID inválido','error'); return; }
+  confirmDialog(`¿Desactivar Plan Pro para <strong>${email||uid}</strong>?`, async()=>{
+    try{
+      await db.doc(`users/${uid}/plan/estado`).update({tipo:'gratis', vence:null});
+      await db.doc(`master_registry/${uid}`).update({plan:'gratis', planVence:null, ultimaActualizacion:firebase.firestore.Timestamp.now().seconds});
+      const item = (window._pmData||[]).find(d=>d.uid===uid);
+      if(item){ item.plan='gratis'; item.planVence=null; }
+      renderPMTable(); renderPMStats();
+      toast(`Plan desactivado para ${email||uid}`,'warn');
+    }catch(e){ toast('Error: '+e.message,'error'); }
+  });
+}
+
+async function registrarEnMaestro(){
+  if(!S.uid || !S.user?.email) return;
+  try{
+    const planSnap = await db.doc(`users/${S.uid}/plan/estado`).get();
+    const planData = planSnap.exists ? planSnap.data() : {};
+    await db.doc(`master_registry/${S.uid}`).set({
+      uid: S.uid, email: S.user.email, bizName: S.bizName || 'Sin nombre',
+      plan: planData.tipo || 'gratis',
+      planVence: planData.vence ? planData.vence.seconds : null,
+      creadoEn: firebase.firestore.Timestamp.now().seconds,
+      ultimaConexion: firebase.firestore.Timestamp.now().seconds,
+    },{merge:true});
+  }catch(e){ console.warn('registrarEnMaestro error:',e); }
+}
 </script>
 </body>
 </html>
