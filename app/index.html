@@ -3991,7 +3991,7 @@ async function loadPlan(){
         await db.doc(`users/${S.uid}/plan/estado`).update({ventasMes:0,ventasMesReset:mesActual});
         d.ventasMes=0; d.ventasMesReset=mesActual;
       }
-      S.plan = { tipo:d.tipo||'gratis', vence:d.vence||null, clientesUsados:d.clientesUsados||0, ventasMes:d.ventasMes||0, ventasMesReset:d.ventasMesReset||mesActual };
+      S.plan = { tipo:d.tipo||'gratis', vence:d.vence||null, clientesUsados:d.clientesUsados||0, ventasMes:d.ventasMes||0, ventasMesReset:d.ventasMesReset||mesActual, paymentSourceId:d.paymentSourceId||null };
     } else {
       const planInicial = { tipo:'gratis', vence:null, clientesUsados:0, ventasMes:0, ventasMesReset:mesActual, creadoEn:firebase.firestore.Timestamp.now() };
       await db.doc(`users/${S.uid}/plan/estado`).set(planInicial);
@@ -4136,6 +4136,18 @@ function renderSuscripcion(){
     <button class="btn" style="background:var(--gold);color:#04100a;font-weight:700;font-size:15px;padding:13px 32px;border-radius:10px" onclick="iniciarPagoWompi()">🚀 Activar Plan Pro — $29.900/mes</button>
     <p style="font-size:11px;color:var(--text3);margin-top:10px">🔒 Wompi (Bancolombia) · Sin contratos · Cancela cuando quieras</p>
   </div>`:`
+  <div class="card mb-4" style="border-color:${S.plan.paymentSourceId?'rgba(74,222,128,.3)':'rgba(251,191,36,.3)'};text-align:center;padding:24px">
+    <div style="font-size:32px;margin-bottom:10px">${S.plan.paymentSourceId?'🔁':'💳'}</div>
+    ${S.plan.paymentSourceId?`
+      <h3 style="font-family:Syne,sans-serif;font-size:16px;font-weight:700;margin-bottom:6px;color:var(--accent)">Renovación automática activa</h3>
+      <p style="font-size:13px;color:var(--text3);margin-bottom:14px">Tu Plan Pro se renovará solo cada mes. No tienes que hacer nada.</p>
+      <button class="btn btn-ghost btn-sm" onclick="abrirModalTarjeta()">Cambiar tarjeta</button>
+    `:`
+      <h3 style="font-family:Syne,sans-serif;font-size:16px;font-weight:700;margin-bottom:6px">Activa la renovación automática</h3>
+      <p style="font-size:13px;color:var(--text3);margin-bottom:14px;max-width:360px;margin-left:auto;margin-right:auto">Guarda tu tarjeta de forma segura con Wompi para que tu Plan Pro se renueve solo cada mes, sin que tengas que volver a pagar a mano.</p>
+      <button class="btn" style="background:var(--accent);color:#04100a;font-weight:700" onclick="abrirModalTarjeta()">🔁 Activar renovación automática</button>
+    `}
+  </div>
   <div class="card" style="text-align:center;padding:20px;border-color:rgba(248,113,113,.2)">
     <h3 style="font-size:14px;margin-bottom:8px;color:var(--text3)">¿Quieres cancelar?</h3>
     <p style="font-size:13px;color:var(--text3);margin-bottom:14px">Tu plan seguirá activo hasta la fecha de vencimiento.</p>
@@ -4143,13 +4155,23 @@ function renderSuscripcion(){
   </div>`}`;
 }
 
-function iniciarPagoWompi(){
-  const referencia = `GO-PRO-${S.uid.slice(0,8)}-${Date.now()}`;
+const WOMPI_FUNCTIONS_BASE = 'https://us-central1-finanzas-claras-pro.cloudfunctions.net';
+
+async function iniciarPagoWompi(){
+  const referencia = `GOPRO-${S.uid}-${Date.now()}`;
   const monto = 2990000;
-  db.doc(`users/${S.uid}/plan/pago_pendiente`).set({
-    referencia, monto, plan:'pro',
-    creadoEn:firebase.firestore.Timestamp.now(), estado:'iniciado'
-  }).then(()=>{
+  try{
+    await db.doc(`users/${S.uid}/plan/pago_pendiente`).set({
+      referencia, monto, plan:'pro',
+      creadoEn:firebase.firestore.Timestamp.now(), estado:'iniciado'
+    });
+    // Firma de integridad: obligatoria por Wompi, se genera en el servidor
+    // (la llave secreta de integridad nunca debe estar en el navegador).
+    const firmaResp = await fetch(`${WOMPI_FUNCTIONS_BASE}/wompiIntegridad`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ reference: referencia, amount: monto, currency:'COP' })
+    });
+    const firmaData = await firmaResp.json();
     const params = new URLSearchParams({
       'public-key': WOMPI_PUBLIC_KEY,
       currency:'COP',
@@ -4157,8 +4179,9 @@ function iniciarPagoWompi(){
       reference: referencia,
       'redirect-url': window.location.href + '?pago=ok&ref=' + referencia,
     });
+    if(firmaData?.signature) params.set('signature:integrity', firmaData.signature);
     window.location.href = `https://checkout.wompi.co/p/?${params.toString()}`;
-  }).catch(e=>toast('Error al iniciar el pago: '+e.message,'error'));
+  }catch(e){ toast('Error al iniciar el pago: '+e.message,'error'); }
 }
 
 async function verificarPagoWompi(){
@@ -4266,6 +4289,79 @@ async function verificarPagoWompi(){
     closeModal();
     console.error('verificarPago error:',e);
     toast('Error al verificar el pago. Si fue cobrado, escríbenos a julianrene113@gmail.com','warn');
+  }
+}
+
+// ── RENOVACIÓN AUTOMÁTICA: guardar tarjeta como fuente de pago Wompi ──
+function abrirModalTarjeta(){
+  showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:380px">
+    <div class="modal-body" style="padding:24px 20px">
+      <h3 style="font-family:Syne,sans-serif;font-size:17px;font-weight:700;margin-bottom:4px">💳 Guardar tarjeta</h3>
+      <p style="font-size:12.5px;color:var(--text3);margin-bottom:16px">Tus datos van directo y cifrados a Wompi (Bancolombia). Nosotros nunca vemos ni guardamos el número completo de tu tarjeta.</p>
+      <div class="field"><label>Número de tarjeta</label><input id="tj-numero" placeholder="4242 4242 4242 4242" maxlength="19"/></div>
+      <div style="display:flex;gap:10px">
+        <div class="field" style="flex:1"><label>Vence (MM/AA)</label><input id="tj-vence" placeholder="12/28" maxlength="5"/></div>
+        <div class="field" style="flex:1"><label>CVC</label><input id="tj-cvc" placeholder="123" maxlength="4"/></div>
+      </div>
+      <div class="field"><label>Nombre del titular</label><input id="tj-nombre" placeholder="Como aparece en la tarjeta"/></div>
+      <p id="tj-error" style="font-size:12.5px;color:var(--red);min-height:16px;margin-bottom:4px"></p>
+      <button class="btn btn-primary btn-full" id="tj-btn" onclick="guardarTarjetaRecurrente()">Guardar tarjeta</button>
+      <div style="text-align:center;margin-top:8px"><span onclick="closeModal()" style="font-size:12px;color:var(--text3);cursor:pointer">Cancelar</span></div>
+    </div>
+  </div></div>`);
+}
+
+async function guardarTarjetaRecurrente(){
+  const numero = document.getElementById('tj-numero').value.replace(/\s/g,'');
+  const vence  = document.getElementById('tj-vence').value.trim();
+  const cvc    = document.getElementById('tj-cvc').value.trim();
+  const nombre = document.getElementById('tj-nombre').value.trim();
+  const errEl  = document.getElementById('tj-error');
+  const btn    = document.getElementById('tj-btn');
+  errEl.textContent='';
+  if(!numero||!vence||!cvc||!nombre){ errEl.textContent='Completa todos los campos.'; return; }
+  const [mm,aa] = vence.split('/').map(s=>s?.trim());
+  if(!mm||!aa||mm.length!==2||aa.length!==2){ errEl.textContent='Formato de vencimiento inválido. Usa MM/AA.'; return; }
+
+  btn.disabled=true; btn.textContent='Procesando…';
+  try{
+    // 1. Tokenizar la tarjeta directo con Wompi (nunca pasa por nuestro servidor)
+    const tokRes = await fetch('https://production.wompi.co/v1/tokens/cards', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${WOMPI_PUBLIC_KEY}`},
+      body: JSON.stringify({
+        number: numero, exp_month: mm, exp_year: aa, cvc, card_holder: nombre
+      })
+    });
+    const tokData = await tokRes.json();
+    if(!tokData?.data?.id){
+      errEl.textContent = tokData?.error?.messages ? Object.values(tokData.error.messages).flat().join(' ') : 'No se pudo validar la tarjeta. Revisa los datos.';
+      btn.disabled=false; btn.textContent='Guardar tarjeta'; return;
+    }
+
+    // 2. Token de aceptación de términos (lo exige Wompi para crear fuentes de pago)
+    const merchRes = await fetch(`https://production.wompi.co/v1/merchants/${WOMPI_PUBLIC_KEY}`);
+    const merchData = await merchRes.json();
+    const acceptanceToken = merchData?.data?.presigned_acceptance?.acceptance_token;
+    if(!acceptanceToken){ errEl.textContent='No se pudo iniciar el proceso con Wompi. Intenta de nuevo.'; btn.disabled=false; btn.textContent='Guardar tarjeta'; return; }
+
+    // 3. Crear la fuente de pago — esto sí pasa por nuestro servidor (necesita la llave privada)
+    const idToken = await auth.currentUser.getIdToken();
+    const srcRes = await fetch(`${WOMPI_FUNCTIONS_BASE}/crearFuentePago`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${idToken}`},
+      body: JSON.stringify({ cardToken: tokData.data.id, customerEmail: S.user.email, acceptanceToken })
+    });
+    const srcData = await srcRes.json();
+    if(!srcData?.ok){ errEl.textContent = srcData?.error || 'No se pudo guardar la tarjeta. Intenta de nuevo.'; btn.disabled=false; btn.textContent='Guardar tarjeta'; return; }
+
+    S.plan.paymentSourceId = srcData.paymentSourceId;
+    closeModal();
+    toast('🔁 Renovación automática activada');
+    go('suscripcion');
+  }catch(e){
+    errEl.textContent = 'Error de conexión. Intenta de nuevo.';
+    btn.disabled=false; btn.textContent='Guardar tarjeta';
   }
 }
 
