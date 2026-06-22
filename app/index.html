@@ -4180,7 +4180,10 @@ async function iniciarPagoWompi(){
       'redirect-url': window.location.href + '?pago=ok&ref=' + referencia,
     });
     if(firmaData?.signature) params.set('signature:integrity', firmaData.signature);
-    window.location.href = `https://checkout.wompi.co/p/?${params.toString()}`;
+    // URLSearchParams codifica el ':' del nombre del parámetro como %3A, y Wompi
+    // no lo reconoce así — hay que dejarlo literal en la URL final.
+    const urlFinal = `https://checkout.wompi.co/p/?${params.toString()}`.replace('signature%3Aintegrity=','signature:integrity=');
+    window.location.href = urlFinal;
   }catch(e){ toast('Error al iniciar el pago: '+e.message,'error'); }
 }
 
