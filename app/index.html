@@ -324,6 +324,7 @@ tr:hover td{background:rgba(18,32,22,.6)}
       <div class="nav-item admin-only" data-page="inventario" onclick="go('inventario')"><span class="ni">🏭</span><span class="nl">Inventario</span></div>
       <div class="nav-item admin-only" data-page="ventas" onclick="go('ventas')"><span class="ni">💰</span><span class="nl">Ventas</span></div>
       <div class="nav-item admin-only" data-page="pagos" onclick="go('pagos')"><span class="ni">💳</span><span class="nl">Pagos</span></div>
+      <div class="nav-item admin-only" data-page="gastos" onclick="go('gastos')"><span class="ni">🧾</span><span class="nl">Gastos</span></div>
 
       <div class="nav-section-label admin-only">Análisis</div>
       <div class="nav-item admin-only pro-only" data-page="reportes" onclick="go('reportes')"><span class="ni">📈</span><span class="nl">Reportes</span><span class="pro-badge">PRO</span></div>
@@ -702,6 +703,7 @@ function go(page, params={}){
     inventario: renderInventario,
     ventas: renderVentas,
     pagos: renderPagos,
+    gastos: renderGastos,
     reportes: renderReportes,
     whatsapp: renderWhatsApp,
     exportar: renderExportar,
@@ -1377,11 +1379,23 @@ async function confirmarVenta(){
 
   try{
     await batch.commit();
-    toast(`Venta registrada: ${fmt(total)} ✅`);
+    const ventaParaPDF = { id: ventaRef.id, fecha: tsNow(), total, items: POS.cart.map(i=>({nombre:i.nombre,precio:i.precio,cantidad:i.qty})), clienteNombre: POS.client?.nombre||null, metodoPago: metodo };
     POS.cart=[]; POS.client=null;
     renderCart();
     const cn = document.getElementById('pos-client-name');
     if(cn) cn.textContent='Sin cliente';
+    // Ofrecer imprimir recibo
+    showModal(`<div class="modal-overlay"><div class="modal" style="max-width:320px;text-align:center">
+      <div class="modal-body" style="padding:28px 20px">
+        <div style="font-size:40px;margin-bottom:10px">✅</div>
+        <h3 style="font-family:Syne,sans-serif;font-size:18px;font-weight:700;margin-bottom:6px">¡Venta registrada!</h3>
+        <p style="font-size:22px;font-weight:700;color:var(--accent);margin-bottom:16px">${fmt(total)}</p>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-ghost btn-full" onclick="closeModal()">Cerrar</button>
+          <button class="btn btn-primary btn-full" onclick="closeModal();generarPDFVenta(${JSON.stringify(ventaParaPDF).replace(/'/g,'&#39;')})">🖨️ Imprimir recibo</button>
+        </div>
+      </div>
+    </div></div>`);
   }catch(e){ toast('Error: '+e.message,'error'); }
 }
 
@@ -3039,7 +3053,7 @@ function renderVentasTable(){
       <td class="text-sm text-muted">${v.empleadoNombre||'—'}</td>
       <td><span class="badge ${v.tipo==='servicio'?'badge-blue':'badge-green'}" style="font-size:10.5px">${v.tipo==='servicio'?'Servicio':'Producto'}</span></td>
       <td>${estadoBadge}</td>
-      <td>${puedeDevolver?`<button class="btn btn-ghost btn-sm cf-devolver-venta" data-cid="${v.id}">↩️ Devolver</button>`:''}</td>
+      <td>${puedeDevolver?`<button class="btn btn-ghost btn-sm cf-devolver-venta" data-cid="${v.id}">↩️ Devolver</button>`:''} <button class="btn btn-ghost btn-sm" onclick='generarPDFVenta(${JSON.stringify({id:v.id,fecha:v.fecha,total:v.total,items:v.items||[],clienteNombre:v.clienteNombre,metodoPago:v.metodo,vendedor:v.empleadoNombre})})' title="Imprimir recibo">🖨️</button></td>
     </tr>`;}).join('')}</tbody>
   </table>`;
 }
@@ -4366,6 +4380,240 @@ async function guardarTarjetaRecurrente(){
     errEl.textContent = 'Error de conexión. Intenta de nuevo.';
     btn.disabled=false; btn.textContent='Guardar tarjeta';
   }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MÓDULO DE GASTOS
+// ═══════════════════════════════════════════════════════════
+const CATEGORIAS_GASTO = [
+  {id:'agua',       label:'Agua',         emoji:'💧'},
+  {id:'luz',        label:'Luz',          emoji:'💡'},
+  {id:'gas',        label:'Gas',          emoji:'🔥'},
+  {id:'internet',   label:'Internet',     emoji:'🌐'},
+  {id:'arriendo',   label:'Arriendo',     emoji:'🏠'},
+  {id:'nomina',     label:'Nómina',       emoji:'👥'},
+  {id:'proveedor',  label:'Proveedor',    emoji:'📦'},
+  {id:'mercadeo',   label:'Mercadeo',     emoji:'📣'},
+  {id:'transporte', label:'Transporte',   emoji:'🚗'},
+  {id:'otro',       label:'Otro',         emoji:'📋'},
+];
+
+function renderGastos(){
+  const mes = new Date().toISOString().slice(0,7);
+  document.getElementById('content').innerHTML=`
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+    <div><h2 class="page-title">🧾 Gastos</h2><p class="page-sub">Controla los egresos de tu negocio</p></div>
+    <button class="btn btn-primary" onclick="abrirModalGasto()">+ Nuevo gasto</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <input type="month" id="g-mes" value="${mes}" onchange="renderGastosTabla()" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px"/>
+    <select id="g-cat" onchange="renderGastosTabla()" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px">
+      <option value="">Todas las categorías</option>
+      ${CATEGORIAS_GASTO.map(c=>`<option value="${c.id}">${c.emoji} ${c.label}</option>`).join('')}
+    </select>
+  </div>
+  <div id="gastos-resumen" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:18px"></div>
+  <div id="gastos-tabla"></div>`;
+  renderGastosTabla();
+}
+
+async function renderGastosTabla(){
+  const mes   = document.getElementById('g-mes')?.value || new Date().toISOString().slice(0,7);
+  const cat   = document.getElementById('g-cat')?.value || '';
+  const desde = new Date(mes+'-01');
+  const hasta = new Date(new Date(desde.getFullYear(), desde.getMonth()+1, 1));
+  const snap  = await db.collection(`users/${S.uid}/gastos`)
+    .where('fecha','>=',firebase.firestore.Timestamp.fromDate(desde))
+    .where('fecha','<', firebase.firestore.Timestamp.fromDate(hasta))
+    .orderBy('fecha','desc').get().catch(()=>({docs:[]}));
+  let gastos = snap.docs.map(d=>({id:d.id,...d.data()}));
+  if(cat) gastos = gastos.filter(g=>g.categoria===cat);
+
+  // Resumen por categoría
+  const totCat = {};
+  gastos.forEach(g=>{ totCat[g.categoria]=(totCat[g.categoria]||0)+g.monto; });
+  const totalMes = gastos.reduce((s,g)=>s+g.monto,0);
+  const resEl = document.getElementById('gastos-resumen');
+  if(resEl) resEl.innerHTML = `
+    <div class="card" style="padding:14px;text-align:center">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px">TOTAL MES</div>
+      <div style="font-size:20px;font-weight:700;color:var(--red)">${fmt(totalMes)}</div>
+    </div>
+    ${Object.entries(totCat).map(([cid,tot])=>{
+      const c=CATEGORIAS_GASTO.find(x=>x.id===cid)||{emoji:'📋',label:cid};
+      return `<div class="card" style="padding:14px;text-align:center">
+        <div style="font-size:18px">${c.emoji}</div>
+        <div style="font-size:11px;color:var(--text3);margin:2px 0">${c.label}</div>
+        <div style="font-size:14px;font-weight:700;color:var(--red)">${fmt(tot)}</div>
+      </div>`;
+    }).join('')}`;
+
+  const tabEl = document.getElementById('gastos-tabla');
+  if(!tabEl) return;
+  if(!gastos.length){ tabEl.innerHTML='<div class="empty"><div class="empty-icon">🧾</div><p>Sin gastos registrados este mes</p></div>'; return; }
+  tabEl.innerHTML=`<div class="card" style="overflow:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+      <thead><tr style="border-bottom:1px solid var(--border)">
+        <th style="padding:10px 8px;text-align:left;color:var(--text3);font-weight:600">Fecha</th>
+        <th style="padding:10px 8px;text-align:left;color:var(--text3);font-weight:600">Categoría</th>
+        <th style="padding:10px 8px;text-align:left;color:var(--text3);font-weight:600">Descripción</th>
+        <th style="padding:10px 8px;text-align:right;color:var(--text3);font-weight:600">Monto</th>
+        <th style="padding:10px 8px;text-align:center;color:var(--text3);font-weight:600">Recibo</th>
+        <th style="padding:10px 8px;text-align:center;color:var(--text3);font-weight:600"></th>
+      </tr></thead>
+      <tbody>${gastos.map(g=>{
+        const c=CATEGORIAS_GASTO.find(x=>x.id===g.categoria)||{emoji:'📋',label:g.categoria};
+        const fecha=g.fecha?.toDate?g.fecha.toDate():new Date(g.fecha);
+        return `<tr style="border-bottom:1px solid var(--border)" id="grow-${g.id}">
+          <td style="padding:10px 8px">${fecha.toLocaleDateString('es-CO')}</td>
+          <td style="padding:10px 8px">${c.emoji} ${c.label}</td>
+          <td style="padding:10px 8px;color:var(--text2)">${g.descripcion||'—'}</td>
+          <td style="padding:10px 8px;text-align:right;font-weight:600;color:var(--red)">${fmt(g.monto)}</td>
+          <td style="padding:10px 8px;text-align:center">${g.reciboURL?`<a href="${g.reciboURL}" target="_blank" style="color:var(--accent);font-size:12px">Ver 📎</a>`:'—'}</td>
+          <td style="padding:10px 8px;text-align:center">
+            <button class="btn btn-ghost btn-sm" onclick="eliminarGasto('${g.id}')" style="padding:4px 8px;font-size:11px;color:var(--red)">✕</button>
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+function abrirModalGasto(g=null){
+  const hoy = new Date().toISOString().slice(0,10);
+  showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px">
+    <div class="modal-header"><h3>${g?'Editar gasto':'Nuevo gasto'}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Categoría *</label>
+        <select id="g-cat-modal">
+          ${CATEGORIAS_GASTO.map(c=>`<option value="${c.id}" ${g?.categoria===c.id?'selected':''}>${c.emoji} ${c.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Monto (COP) *</label><input id="g-monto" type="number" min="0" value="${g?.monto||''}" placeholder="Ej: 150000"/></div>
+      <div class="field"><label>Descripción</label><input id="g-desc" value="${g?.descripcion||''}" placeholder="Ej: Factura agua febrero"/></div>
+      <div class="field"><label>Fecha *</label><input id="g-fecha" type="date" value="${g?.fecha?.toDate?g.fecha.toDate().toISOString().slice(0,10):hoy}"/></div>
+      <div class="field"><label>Recibo/Comprobante <span style="font-size:11px;color:var(--text3)">(foto o PDF, máx 5MB)</span></label>
+        <input id="g-recibo" type="file" accept="image/*,application/pdf" style="font-size:13px"/>
+      </div>
+      <p id="g-error" style="font-size:12.5px;color:var(--red);min-height:16px"></p>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-ghost btn-full" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary btn-full" id="g-save-btn" onclick="guardarGasto('${g?.id||''}')">Guardar</button>
+      </div>
+    </div>
+  </div></div>`);
+}
+
+async function guardarGasto(id=''){
+  const cat   = document.getElementById('g-cat-modal').value;
+  const monto = parseFloat(document.getElementById('g-monto').value);
+  const desc  = document.getElementById('g-desc').value.trim();
+  const fecha = document.getElementById('g-fecha').value;
+  const file  = document.getElementById('g-recibo').files[0];
+  const errEl = document.getElementById('g-error');
+  const btn   = document.getElementById('g-save-btn');
+  if(!cat||!monto||!fecha){ errEl.textContent='Categoría, monto y fecha son obligatorios.'; return; }
+  if(file && file.size > 5*1024*1024){ errEl.textContent='El archivo no puede superar 5MB.'; return; }
+  btn.disabled=true; btn.textContent='Guardando…';
+  try{
+    let reciboURL = null;
+    if(file){
+      // Guardar en Firebase Storage (base64 en Firestore como fallback si Storage no está activo)
+      const reader = new FileReader();
+      reciboURL = await new Promise((res,rej)=>{
+        reader.onload = e => res(e.target.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(file);
+      });
+      // Si tienes Firebase Storage activo, puedes subir ahí en vez de base64:
+      // const ref = firebase.storage().ref(`users/${S.uid}/gastos/${Date.now()}_${file.name}`);
+      // await ref.put(file);
+      // reciboURL = await ref.getDownloadURL();
+    }
+    const data = {
+      categoria: cat, monto, descripcion: desc,
+      fecha: firebase.firestore.Timestamp.fromDate(new Date(fecha+'T12:00:00')),
+      creadoEn: tsNow(),
+      ...(reciboURL ? {reciboURL} : {})
+    };
+    if(id) await db.doc(`users/${S.uid}/gastos/${id}`).update(data);
+    else    await db.collection(`users/${S.uid}/gastos`).add(data);
+    closeModal();
+    toast('✅ Gasto guardado');
+    renderGastosTabla();
+  }catch(e){
+    errEl.textContent='Error: '+e.message;
+    btn.disabled=false; btn.textContent='Guardar';
+  }
+}
+
+async function eliminarGasto(id){
+  if(!confirm('¿Eliminar este gasto?')) return;
+  await db.doc(`users/${S.uid}/gastos/${id}`).delete();
+  document.getElementById('grow-'+id)?.remove();
+  toast('Gasto eliminado');
+  renderGastosTabla();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  GENERADOR DE PDF DE VENTAS (documento equivalente)
+// ═══════════════════════════════════════════════════════════
+function generarPDFVenta(venta){
+  const items = venta.items||[];
+  const fecha = venta.fecha?.toDate ? venta.fecha.toDate() : new Date();
+  const biz   = S.bizName || 'Mi Negocio';
+  const nit   = S.config?.nit || '';
+  const tel   = S.config?.tel || '';
+  const dir   = S.config?.direccion || '';
+  const html  = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+  <title>Recibo #${venta.id?.slice(-6).toUpperCase()}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,sans-serif;font-size:13px;color:#111;max-width:420px;margin:0 auto;padding:20px}
+    h1{font-size:20px;font-weight:700;text-align:center;margin-bottom:2px}
+    .sub{text-align:center;color:#555;font-size:12px;margin-bottom:16px}
+    .divider{border:none;border-top:1px dashed #999;margin:12px 0}
+    .row{display:flex;justify-content:space-between;margin-bottom:4px}
+    .label{color:#555}
+    table{width:100%;border-collapse:collapse;margin:8px 0}
+    th{text-align:left;font-size:12px;color:#555;border-bottom:1px solid #ddd;padding:4px 0}
+    td{padding:5px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
+    td:last-child{text-align:right}
+    .total-row td{font-weight:700;font-size:14px;border-top:1px solid #999;border-bottom:none;padding-top:8px}
+    .footer{text-align:center;font-size:11px;color:#888;margin-top:16px}
+    @media print{body{padding:0}}
+  </style></head><body>
+  <h1>${biz}</h1>
+  <div class="sub">${nit?'NIT: '+nit+' · ':''}${tel?'Tel: '+tel:''}${dir?'<br>'+dir:''}</div>
+  <hr class="divider">
+  <div class="row"><span class="label">Recibo #</span><span>${(venta.id||'').slice(-6).toUpperCase()}</span></div>
+  <div class="row"><span class="label">Fecha</span><span>${fecha.toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</span></div>
+  <div class="row"><span class="label">Hora</span><span>${fecha.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</span></div>
+  ${venta.clienteNombre?`<div class="row"><span class="label">Cliente</span><span>${venta.clienteNombre}</span></div>`:''}
+  ${venta.vendedor?`<div class="row"><span class="label">Atendido por</span><span>${venta.vendedor}</span></div>`:''}
+  <hr class="divider">
+  <table><thead><tr><th>Producto</th><th style="text-align:center">Cant</th><th style="text-align:right">Total</th></tr></thead>
+  <tbody>${items.map(it=>`<tr>
+    <td>${it.nombre||it.name||'—'}${it.precio?`<br><span style="font-size:11px;color:#888">${fmt(it.precio)} c/u</span>`:''}</td>
+    <td style="text-align:center">${it.cantidad||1}</td>
+    <td>${fmt((it.precio||0)*(it.cantidad||1))}</td>
+  </tr>`).join('')}
+  <tr class="total-row"><td colspan="2">TOTAL</td><td>${fmt(venta.total||0)}</td></tr>
+  </tbody></table>
+  <hr class="divider">
+  <div class="row"><span class="label">Método de pago</span><span>${venta.metodoPago||venta.metodo||'—'}</span></div>
+  ${venta.pagoCon?`<div class="row"><span class="label">Pagó con</span><span>${fmt(venta.pagoCon)}</span></div>`:''}
+  ${venta.cambio?`<div class="row"><span class="label">Cambio</span><span>${fmt(venta.cambio)}</span></div>`:''}
+  <div class="footer" style="margin-top:20px">
+    <p>¡Gracias por tu compra!</p>
+    <p style="margin-top:4px;font-size:10px">Este documento es un comprobante interno de venta.</p>
+    <p style="font-size:10px">No es una factura electrónica DIAN.</p>
+  </div>
+  <script>window.onload=()=>window.print();<\/script>
+  </body></html>`;
+  const win = window.open('','_blank');
+  if(win){ win.document.write(html); win.document.close(); }
+  else toast('Activa las ventanas emergentes para imprimir el recibo','error');
 }
 
 // PATCHES
