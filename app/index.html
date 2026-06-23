@@ -606,7 +606,7 @@ async function loginEmp(){
 async function loadConfig(){
   try{
     const doc = await db.doc(`users/${S.uid}/config/settings`).get();
-    if(doc.exists){ const d=doc.data(); S.bizName=d.bizName||'Mi Negocio'; S.currency=d.currency||'COP'; }
+    if(doc.exists){ const d=doc.data(); S.bizName=d.bizName||'Mi Negocio'; S.currency=d.currency||'COP'; S.config={puntosTasa:d.puntosTasa||1, puntosValor:d.puntosValor||100, nit:d.nit||'', tel:d.tel||'', direccion:d.direccion||''}; }
   }catch(e){ console.warn('loadConfig error',e); }
 }
 
@@ -1033,6 +1033,22 @@ function renderConfig(){
       </div>
     </div>
 
+    <div class="card" style="grid-column:1/-1">
+      <h3 style="font-size:14px;margin-bottom:12px">⭐ Sistema de Puntos de Fidelidad</h3>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label>Puntos por cada $1.000 pesos en compras</label>
+          <input id="cfg-puntos-tasa" type="number" min="1" max="100" value="${S.config?.puntosTasa||1}" style="max-width:120px"/>
+        </div>
+        <div class="field">
+          <label>Valor de cada punto al canjear (COP)</label>
+          <input id="cfg-puntos-valor" type="number" min="1" value="${S.config?.puntosValor||100}" style="max-width:160px"/>
+          <p style="font-size:11.5px;color:var(--text3);margin-top:4px">Ej: si un punto vale $100, 50 puntos = $5.000 de descuento</p>
+        </div>
+        <div><button class="btn btn-primary" onclick="saveConfigPuntos()">Guardar configuración de puntos</button></div>
+      </div>
+    </div>
+
     <div class="card" style="grid-column:1/-1;border-color:rgba(248,113,113,.3)">
       <h3 style="font-size:14px;margin-bottom:8px;color:var(--red)">🗑 Zona de peligro</h3>
       <p style="font-size:13px;color:var(--text3);margin-bottom:14px">Elimina permanentemente los datos del negocio de Firebase. Esta acción no se puede deshacer.</p>
@@ -1063,6 +1079,65 @@ async function saveConfig(){
     S.bizName = bizName; S.currency = currency;
     document.getElementById('sb-bizname').textContent = bizName;
     toast('Configuración guardada ✅');
+  }catch(e){ toast('Error: '+e.message,'error'); }
+}
+
+async function saveConfigPuntos(){
+  const tasa  = parseInt(document.getElementById('cfg-puntos-tasa')?.value)||1;
+  const valor = parseInt(document.getElementById('cfg-puntos-valor')?.value)||100;
+  try{
+    await db.doc(`users/${S.uid}/config/settings`).set({puntosTasa:tasa, puntosValor:valor},{merge:true});
+    if(!S.config) S.config={};
+    S.config.puntosTasa = tasa;
+    S.config.puntosValor = valor;
+    toast('Configuración de puntos guardada ✅');
+  }catch(e){ toast('Error: '+e.message,'error'); }
+}
+
+async function abrirModalPuntos(clienteId){
+  const cl = S.clientes.find(c=>c.id===clienteId);
+  if(!cl) return;
+  const puntos = cl.puntos||0;
+  const valorPunto = S.config?.puntosValor||100;
+  const descuento = puntos * valorPunto;
+  showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:360px">
+    <div class="modal-header"><h3>⭐ Puntos de ${cl.nombre}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div style="text-align:center;padding:16px 0">
+        <div style="font-size:48px;font-weight:700;color:var(--gold)">${puntos}</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:4px">puntos acumulados</div>
+        <div style="font-size:15px;font-weight:600;color:var(--accent);margin-top:8px">= ${fmt(descuento)} de descuento disponible</div>
+        ${cl.cedula?`<div style="font-size:12px;color:var(--text3);margin-top:4px">CC: ${cl.cedula}</div>`:''}
+      </div>
+      <div class="field" style="margin-top:8px">
+        <label>Puntos a canjear</label>
+        <input id="pts-canjear" type="number" min="1" max="${puntos}" value="${puntos}" oninput="document.getElementById('pts-desc').textContent=fmt((+this.value||0)*${valorPunto})"/>
+        <p style="font-size:12.5px;color:var(--text3);margin-top:4px">Descuento: <strong id="pts-desc">${fmt(descuento)}</strong></p>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button class="btn btn-ghost btn-full" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary btn-full" onclick="canjearPuntos('${clienteId}',${puntos})">Canjear puntos</button>
+      </div>
+    </div>
+  </div></div>`);
+}
+
+async function canjearPuntos(clienteId, puntosActuales){
+  const ptsACanjear = parseInt(document.getElementById('pts-canjear')?.value)||0;
+  if(ptsACanjear<=0||ptsACanjear>puntosActuales){ toast('Cantidad de puntos inválida','warn'); return; }
+  const valorPunto = S.config?.puntosValor||100;
+  const descuento  = ptsACanjear * valorPunto;
+  try{
+    await col('clientes').doc(clienteId).update({
+      puntos: firebase.firestore.FieldValue.increment(-ptsACanjear)
+    });
+    await col('clientes').doc(clienteId).update({
+      ultimoCanje: { puntos: ptsACanjear, descuento, fecha: tsNow() }
+    });
+    closeModal();
+    toast(`✅ Canjeados ${ptsACanjear} pts = ${fmt(descuento)} de descuento`);
+    const psEl = document.getElementById('ps-puntos');
+    if(psEl) psEl.textContent = puntosActuales - ptsACanjear;
   }catch(e){ toast('Error: '+e.message,'error'); }
 }
 
@@ -1328,12 +1403,20 @@ function openClientSelector(){
 
 function renderClientSel(q){
   const el = document.getElementById('csel-list'); if(!el) return;
-  const list = S.clientes.filter(c=>!q||c.nombre?.toLowerCase().includes(q.toLowerCase())||c.telefono?.includes(q)).slice(0,20);
-  if(!list.length){ el.innerHTML='<div class="empty" style="padding:16px"><p>Sin clientes</p></div>'; return; }
+  const list = S.clientes.filter(c=>!q||
+    c.nombre?.toLowerCase().includes(q.toLowerCase())||
+    c.telefono?.includes(q)||
+    (c.cedula&&c.cedula.includes(q))
+  ).slice(0,20);
+  if(!list.length){ el.innerHTML='<div class="empty" style="padding:16px"><p>Sin clientes. Puedes <span style="color:var(--accent);cursor:pointer" onclick="closeModal();openClientModal()">crear uno nuevo</span></p></div>'; return; }
   el.innerHTML = list.map(c=>`
     <div class="sr-item" onclick="selectClient('${c.id}','${(c.nombre||'').replace(/'/g,"\\'")}','${(c.telefono||'').replace(/'/g,"\\'")}')">
       <div style="width:32px;height:32px;border-radius:50%;background:${avatarColor(c.nombre)};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#04100a;flex-shrink:0">${initials(c.nombre)}</div>
-      <div><div class="sr-name">${c.nombre}</div><div class="sr-sub">${c.telefono||'Sin teléfono'}</div></div>
+      <div style="flex:1">
+        <div class="sr-name">${c.nombre}</div>
+        <div class="sr-sub">${c.cedula?'CC: '+c.cedula+' · ':''} ${c.telefono||'Sin teléfono'}</div>
+      </div>
+      ${(c.puntos||0)>0?`<div style="font-size:11px;background:rgba(74,222,128,.15);color:var(--accent);padding:2px 8px;border-radius:20px;font-weight:700">⭐ ${c.puntos||0} pts</div>`:''}
     </div>`).join('');
 }
 
@@ -1377,19 +1460,32 @@ async function confirmarVenta(){
     }
   }
 
+  // 3. Puntos de fidelidad: 1 punto por cada $1.000 pesos
+  const puntosGanados = POS.client?.id ? Math.floor(total/(1000/(S.config?.puntosTasa||1))) : 0;
+  if(puntosGanados > 0){
+    batch.update(col('clientes').doc(POS.client.id),{
+      puntos: firebase.firestore.FieldValue.increment(puntosGanados)
+    });
+  }
+
   try{
     await batch.commit();
-    const ventaParaPDF = { id: ventaRef.id, fecha: tsNow(), total, items: POS.cart.map(i=>({nombre:i.nombre,precio:i.precio,cantidad:i.qty})), clienteNombre: POS.client?.nombre||null, metodoPago: metodo };
+    const clienteActual = POS.client;
+    const ventaParaPDF = { id: vRef.id, fecha: tsNow(), total, items: POS.cart.map(i=>({nombre:i.nombre,precio:i.precio,cantidad:i.qty})), clienteNombre: clienteActual?.nombre||null, metodoPago: POS.payMethod };
     POS.cart=[]; POS.client=null;
     renderCart();
     const cn = document.getElementById('pos-client-name');
     if(cn) cn.textContent='Sin cliente';
-    // Ofrecer imprimir recibo
+    const ptsEl = puntosGanados>0 ? `<div style="background:rgba(74,222,128,.1);border-radius:10px;padding:10px;margin-bottom:14px">
+      <div style="font-size:13px;color:var(--text3)">Puntos ganados esta compra</div>
+      <div style="font-size:20px;font-weight:700;color:var(--accent)">+${puntosGanados} ⭐</div>
+    </div>` : '';
     showModal(`<div class="modal-overlay"><div class="modal" style="max-width:320px;text-align:center">
       <div class="modal-body" style="padding:28px 20px">
         <div style="font-size:40px;margin-bottom:10px">✅</div>
         <h3 style="font-family:Syne,sans-serif;font-size:18px;font-weight:700;margin-bottom:6px">¡Venta registrada!</h3>
         <p style="font-size:22px;font-weight:700;color:var(--accent);margin-bottom:16px">${fmt(total)}</p>
+        ${ptsEl}
         <div style="display:flex;gap:10px">
           <button class="btn btn-ghost btn-full" onclick="closeModal()">Cerrar</button>
           <button class="btn btn-primary btn-full" onclick="closeModal();generarPDFVenta(${JSON.stringify(ventaParaPDF).replace(/'/g,'&#39;')})">🖨️ Imprimir recibo</button>
@@ -1815,6 +1911,7 @@ function openClientModal(id=null){
       </div>
       <div class="modal-body">
         <div class="form-grid">
+          <div class="field"><label>Cédula <span style="font-size:11px;color:var(--text3)">(para puntos de fidelidad)</span></label><input id="cl-cedula" value="${cl?.cedula||''}" placeholder="Ej: 1234567890"/></div>
           <div class="field"><label>Nombre completo *</label><input id="cl-nombre" value="${cl?.nombre||''}" placeholder="María López"/></div>
           <div class="field"><label>Teléfono</label>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -1849,6 +1946,7 @@ async function saveClient(id){
   if(!nombre){ toast('El nombre es requerido','warn'); return; }
   const tags = [...document.querySelectorAll('[data-tag].active')].map(el=>el.dataset.tag);
   const data = {
+    cedula:   document.getElementById('cl-cedula').value.trim(),
     nombre,
     telefonoCode: document.getElementById('cl-tel-code')?.value||'+57',
     telefonoNum:  document.getElementById('cl-tel').value.trim(),
@@ -1907,6 +2005,11 @@ async function renderClientePerfil(clientId){
     <div class="stat-card"><div class="sc-label">Visitas</div><div class="sc-value" id="ps-visitas">0</div></div>
     <div class="stat-card"><div class="sc-label">Citas</div><div class="sc-value" id="ps-citas">0</div></div>
     <div class="stat-card"><div class="sc-label">Deuda</div><div class="sc-value text-red" id="ps-deuda">$0</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="abrirModalPuntos('${cl.id}')">
+      <div class="sc-label">Puntos ⭐</div>
+      <div class="sc-value" id="ps-puntos" style="color:var(--gold)">${cl.puntos||0}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">toca para canjear</div>
+    </div>
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:16px">
