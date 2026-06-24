@@ -1471,25 +1471,64 @@ async function confirmarVenta(){
   try{
     await batch.commit();
     const clienteActual = POS.client;
-    const ventaParaPDF = { id: vRef.id, fecha: tsNow(), total, items: POS.cart.map(i=>({nombre:i.nombre,precio:i.precio,cantidad:i.qty})), clienteNombre: clienteActual?.nombre||null, metodoPago: POS.payMethod };
+    // Guardar en variable global para evitar JSON en onclick (evita SyntaxError con caracteres especiales)
+    window._ultimaVenta = {
+      id: vRef.id,
+      fecha: new Date(),
+      total,
+      subtotal: total,
+      items: POS.cart.map(i=>({nombre:i.nombre, precio:i.precio, cantidad:i.qty, subtotal:i.precio*i.qty})),
+      clienteNombre: clienteActual?.nombre||null,
+      clienteCedula: clienteActual?.cedula||null,
+      clienteTel: clienteActual?.telefono||null,
+      metodoPago: POS.payMethod||metodo,
+      pagoCon: POS.pagoCon||null,
+      cambio: POS.cambio||null,
+      vendedor: S.empData?.nombre||S.user?.displayName||null,
+      puntosGanados
+    };
     POS.cart=[]; POS.client=null;
     renderCart();
     const cn = document.getElementById('pos-client-name');
     if(cn) cn.textContent='Sin cliente';
-    const ptsEl = puntosGanados>0 ? `<div style="background:rgba(74,222,128,.1);border-radius:10px;padding:10px;margin-bottom:14px">
-      <div style="font-size:13px;color:var(--text3)">Puntos ganados esta compra</div>
-      <div style="font-size:20px;font-weight:700;color:var(--accent)">+${puntosGanados} ⭐</div>
-    </div>` : '';
-    showModal(`<div class="modal-overlay"><div class="modal" style="max-width:320px;text-align:center">
-      <div class="modal-body" style="padding:28px 20px">
-        <div style="font-size:40px;margin-bottom:10px">✅</div>
-        <h3 style="font-family:Syne,sans-serif;font-size:18px;font-weight:700;margin-bottom:6px">¡Venta registrada!</h3>
-        <p style="font-size:22px;font-weight:700;color:var(--accent);margin-bottom:16px">${fmt(total)}</p>
-        ${ptsEl}
-        <div style="display:flex;gap:10px">
-          <button class="btn btn-ghost btn-full" onclick="closeModal()">Cerrar</button>
-          <button class="btn btn-primary btn-full" onclick="closeModal();generarPDFVenta(${JSON.stringify(ventaParaPDF).replace(/'/g,'&#39;')})">🖨️ Imprimir recibo</button>
+    const ptsEl = puntosGanados>0 ? `
+      <div style="background:rgba(74,222,128,.1);border-radius:10px;padding:10px;margin-bottom:14px;text-align:center">
+        <div style="font-size:12px;color:var(--text3)">Puntos ganados</div>
+        <div style="font-size:22px;font-weight:700;color:var(--accent)">+${puntosGanados} ⭐</div>
+      </div>` : '';
+    showModal(`<div class="modal-overlay"><div class="modal" style="max-width:360px">
+      <div class="modal-body" style="padding:24px 20px">
+        <div style="text-align:center;margin-bottom:16px">
+          <div style="font-size:44px;margin-bottom:8px">✅</div>
+          <h3 style="font-family:Syne,sans-serif;font-size:19px;font-weight:700;margin-bottom:4px">¡Venta registrada!</h3>
+          <p style="font-size:26px;font-weight:700;color:var(--accent)">${fmt(total)}</p>
         </div>
+        <div style="background:var(--surface);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="color:var(--text3)">Recibo #</span>
+            <span style="font-weight:600">${vRef.id.slice(-6).toUpperCase()}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="color:var(--text3)">Método de pago</span>
+            <span>${POS.payMethod||metodo||'—'}</span>
+          </div>
+          ${clienteActual?.nombre?`<div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="color:var(--text3)">Cliente</span>
+            <span>${clienteActual.nombre}</span>
+          </div>`:''}
+          <div style="border-top:1px solid var(--border);margin:8px 0"></div>
+          ${(window._ultimaVenta.items||[]).map(it=>`
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <span>${it.nombre} <span style="color:var(--text3)">x${it.cantidad}</span></span>
+              <span>${fmt(it.subtotal)}</span>
+            </div>`).join('')}
+        </div>
+        ${ptsEl}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <button class="btn btn-ghost" onclick="closeModal();abrirReciboCompleto()">🖨️ Ver recibo</button>
+          <button class="btn btn-ghost" onclick="closeModal();compartirReciboWhatsApp()">💬 WhatsApp</button>
+        </div>
+        <button class="btn btn-primary btn-full" onclick="closeModal()">Listo</button>
       </div>
     </div></div>`);
   }catch(e){ toast('Error: '+e.message,'error'); }
@@ -3156,7 +3195,7 @@ function renderVentasTable(){
       <td class="text-sm text-muted">${v.empleadoNombre||'—'}</td>
       <td><span class="badge ${v.tipo==='servicio'?'badge-blue':'badge-green'}" style="font-size:10.5px">${v.tipo==='servicio'?'Servicio':'Producto'}</span></td>
       <td>${estadoBadge}</td>
-      <td>${puedeDevolver?`<button class="btn btn-ghost btn-sm cf-devolver-venta" data-cid="${v.id}">↩️ Devolver</button>`:''} <button class="btn btn-ghost btn-sm" onclick='generarPDFVenta(${JSON.stringify({id:v.id,fecha:v.fecha,total:v.total,items:v.items||[],clienteNombre:v.clienteNombre,metodoPago:v.metodo,vendedor:v.empleadoNombre})})' title="Imprimir recibo">🖨️</button></td>
+      <td>${puedeDevolver?`<button class="btn btn-ghost btn-sm cf-devolver-venta" data-cid="${v.id}">↩️ Devolver</button>`:''} <button class="btn btn-ghost btn-sm" onclick="abrirReciboVenta('${v.id}')" title="Ver recibo">🖨️</button></td>
     </tr>`;}).join('')}</tbody>
   </table>`;
 }
@@ -4661,62 +4700,160 @@ async function eliminarGasto(id){
 // ═══════════════════════════════════════════════════════════
 //  GENERADOR DE PDF DE VENTAS (documento equivalente)
 // ═══════════════════════════════════════════════════════════
+function abrirReciboVenta(ventaId){
+  const v = S.ventas.find(x=>x.id===ventaId);
+  if(!v){ toast('No se encontró la venta','warn'); return; }
+  generarPDFVenta({
+    id: v.id,
+    fecha: v.fecha,
+    total: v.total,
+    items: v.items||[],
+    clienteNombre: v.clienteNombre||null,
+    clienteCedula: v.clienteCedula||null,
+    clienteTel: v.clienteTel||null,
+    metodoPago: v.metodo||v.metodoPago||null,
+    vendedor: v.empleadoNombre||null,
+    pagoCon: v.pagoCon||null,
+    cambio: v.cambio||null,
+    puntosGanados: v.puntosGanados||0
+  });
+}
+
+function abrirReciboCompleto(venta){
+  const v = venta || window._ultimaVenta;
+  if(!v){ toast('No hay venta para mostrar','warn'); return; }
+  generarPDFVenta(v);
+}
+
+function compartirReciboWhatsApp(venta){
+  const v = venta || window._ultimaVenta;
+  if(!v){ toast('No hay venta para compartir','warn'); return; }
+  const biz   = S.bizName||'Mi Negocio';
+  const fecha = v.fecha instanceof Date ? v.fecha : (v.fecha?.toDate?v.fecha.toDate():new Date());
+  const lineas = (v.items||[]).map(it=>`• ${it.nombre} x${it.cantidad} = ${fmt((it.precio||0)*(it.cantidad||1))}`).join('\n');
+  const msg = `🧾 *Recibo de compra - ${biz}*\n\n`+
+    `📋 Recibo #${(v.id||'').slice(-6).toUpperCase()}\n`+
+    `📅 ${fecha.toLocaleDateString('es-CO',{day:'2-digit',month:'long',year:'numeric'})} ${fecha.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}\n`+
+    (v.clienteNombre?`👤 Cliente: ${v.clienteNombre}\n`:'')+
+    `\n*Productos:*\n${lineas}\n\n`+
+    `💰 *TOTAL: ${fmt(v.total||0)}*\n`+
+    `💳 Método: ${v.metodoPago||'—'}\n`+
+    (v.puntosGanados>0?`⭐ Puntos ganados: +${v.puntosGanados}\n`:'')+
+    `\n¡Gracias por tu compra! 🙏`;
+  const tel = v.clienteTel?.replace(/\D/g,'');
+  const url = tel
+    ? `https://wa.me/57${tel}?text=${encodeURIComponent(msg)}`
+    : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  window.open(url,'_blank');
+}
+
 function generarPDFVenta(venta){
-  const items = venta.items||[];
-  const fecha = venta.fecha?.toDate ? venta.fecha.toDate() : new Date();
-  const biz   = S.bizName || 'Mi Negocio';
-  const nit   = S.config?.nit || '';
-  const tel   = S.config?.tel || '';
-  const dir   = S.config?.direccion || '';
-  const html  = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-  <title>Recibo #${venta.id?.slice(-6).toUpperCase()}</title>
+  const v     = venta || window._ultimaVenta;
+  if(!v){ toast('No hay venta para imprimir','warn'); return; }
+  const items = v.items||[];
+  const fecha = v.fecha instanceof Date ? v.fecha : (v.fecha?.toDate?v.fecha.toDate():new Date());
+  const biz   = S.bizName||'Mi Negocio';
+  const nit   = S.config?.nit||'';
+  const tel   = S.config?.tel||'';
+  const dir   = S.config?.direccion||'';
+  const subtotal = items.reduce((s,it)=>s+(it.precio||0)*(it.cantidad||1),0);
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+  <title>Recibo #${(v.id||'').slice(-6).toUpperCase()} - ${biz}</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:13px;color:#111;max-width:420px;margin:0 auto;padding:20px}
-    h1{font-size:20px;font-weight:700;text-align:center;margin-bottom:2px}
-    .sub{text-align:center;color:#555;font-size:12px;margin-bottom:16px}
-    .divider{border:none;border-top:1px dashed #999;margin:12px 0}
-    .row{display:flex;justify-content:space-between;margin-bottom:4px}
+    body{font-family:'Courier New',monospace;font-size:13px;color:#111;max-width:380px;margin:0 auto;padding:24px 16px}
+    h1{font-size:18px;font-weight:700;text-align:center;letter-spacing:1px;margin-bottom:2px}
+    .center{text-align:center}
+    .sub{text-align:center;color:#555;font-size:11px;line-height:1.6;margin-bottom:12px}
+    .divider{border:none;border-top:1px dashed #aaa;margin:10px 0}
+    .divider-solid{border:none;border-top:2px solid #333;margin:10px 0}
+    .row{display:flex;justify-content:space-between;margin-bottom:3px;font-size:12px}
     .label{color:#555}
-    table{width:100%;border-collapse:collapse;margin:8px 0}
-    th{text-align:left;font-size:12px;color:#555;border-bottom:1px solid #ddd;padding:4px 0}
-    td{padding:5px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
-    td:last-child{text-align:right}
-    .total-row td{font-weight:700;font-size:14px;border-top:1px solid #999;border-bottom:none;padding-top:8px}
-    .footer{text-align:center;font-size:11px;color:#888;margin-top:16px}
-    @media print{body{padding:0}}
+    .bold{font-weight:700}
+    table{width:100%;border-collapse:collapse;margin:6px 0;font-size:12px}
+    th{text-align:left;font-size:11px;color:#666;border-bottom:1px dashed #aaa;padding:3px 0}
+    th:last-child{text-align:right}
+    td{padding:5px 2px;border-bottom:1px dashed #eee;vertical-align:top}
+    td:last-child{text-align:right;white-space:nowrap}
+    .prod-name{font-weight:600}
+    .prod-detail{font-size:11px;color:#666;margin-top:2px}
+    .total-box{background:#f5f5f5;border-radius:4px;padding:10px;margin:8px 0}
+    .total-main{display:flex;justify-content:space-between;font-size:16px;font-weight:700;margin-bottom:4px}
+    .total-sub{display:flex;justify-content:space-between;font-size:11px;color:#555;margin-bottom:2px}
+    .puntos{background:#e8f5e8;border-radius:4px;padding:8px;text-align:center;margin:8px 0;font-size:12px}
+    .footer{text-align:center;font-size:11px;color:#888;margin-top:16px;line-height:1.7}
+    .barcode{text-align:center;font-size:8px;letter-spacing:4px;margin:8px 0;color:#333}
+    @media print{
+      body{padding:4px}
+      button{display:none!important}
+    }
+    .no-print{text-align:center;margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+    .btn-p{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}
   </style></head><body>
   <h1>${biz}</h1>
-  <div class="sub">${nit?'NIT: '+nit+' · ':''}${tel?'Tel: '+tel:''}${dir?'<br>'+dir:''}</div>
-  <hr class="divider">
-  <div class="row"><span class="label">Recibo #</span><span>${(venta.id||'').slice(-6).toUpperCase()}</span></div>
-  <div class="row"><span class="label">Fecha</span><span>${fecha.toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</span></div>
-  <div class="row"><span class="label">Hora</span><span>${fecha.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</span></div>
-  ${venta.clienteNombre?`<div class="row"><span class="label">Cliente</span><span>${venta.clienteNombre}</span></div>`:''}
-  ${venta.vendedor?`<div class="row"><span class="label">Atendido por</span><span>${venta.vendedor}</span></div>`:''}
-  <hr class="divider">
-  <table><thead><tr><th>Producto</th><th style="text-align:center">Cant</th><th style="text-align:right">Total</th></tr></thead>
-  <tbody>${items.map(it=>`<tr>
-    <td>${it.nombre||it.name||'—'}${it.precio?`<br><span style="font-size:11px;color:#888">${fmt(it.precio)} c/u</span>`:''}</td>
-    <td style="text-align:center">${it.cantidad||1}</td>
-    <td>${fmt((it.precio||0)*(it.cantidad||1))}</td>
-  </tr>`).join('')}
-  <tr class="total-row"><td colspan="2">TOTAL</td><td>${fmt(venta.total||0)}</td></tr>
-  </tbody></table>
-  <hr class="divider">
-  <div class="row"><span class="label">Método de pago</span><span>${venta.metodoPago||venta.metodo||'—'}</span></div>
-  ${venta.pagoCon?`<div class="row"><span class="label">Pagó con</span><span>${fmt(venta.pagoCon)}</span></div>`:''}
-  ${venta.cambio?`<div class="row"><span class="label">Cambio</span><span>${fmt(venta.cambio)}</span></div>`:''}
-  <div class="footer" style="margin-top:20px">
-    <p>¡Gracias por tu compra!</p>
-    <p style="margin-top:4px;font-size:10px">Este documento es un comprobante interno de venta.</p>
-    <p style="font-size:10px">No es una factura electrónica DIAN.</p>
+  <div class="sub">
+    ${nit?`NIT: ${nit}<br>`:''}
+    ${tel?`Tel: ${tel}<br>`:''}
+    ${dir||''}
   </div>
-  <script>window.onload=()=>window.print();<\/script>
+  <div class="divider-solid"></div>
+  <div class="center" style="font-size:13px;font-weight:700;margin-bottom:6px">COMPROBANTE DE VENTA</div>
+  <div class="row"><span class="label">Recibo #</span><span class="bold">${(v.id||'').slice(-6).toUpperCase()}</span></div>
+  <div class="row"><span class="label">Fecha</span><span>${fecha.toLocaleDateString('es-CO',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</span></div>
+  <div class="row"><span class="label">Hora</span><span>${fecha.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span></div>
+  ${v.vendedor?`<div class="row"><span class="label">Atendido por</span><span>${v.vendedor}</span></div>`:''}
+  <div class="divider"></div>
+  ${v.clienteNombre?`
+  <div class="row"><span class="label">Cliente</span><span class="bold">${v.clienteNombre}</span></div>
+  ${v.clienteCedula?`<div class="row"><span class="label">Cédula</span><span>${v.clienteCedula}</span></div>`:''}
+  ${v.clienteTel?`<div class="row"><span class="label">Teléfono</span><span>${v.clienteTel}</span></div>`:''}
+  <div class="divider"></div>`:''}
+  <table>
+    <thead><tr>
+      <th>Producto</th>
+      <th style="text-align:center">Cant</th>
+      <th style="text-align:right">V.Unit</th>
+      <th style="text-align:right">Total</th>
+    </tr></thead>
+    <tbody>
+    ${items.map(it=>{
+      const subt = (it.precio||0)*(it.cantidad||1);
+      return `<tr>
+        <td><div class="prod-name">${it.nombre||'—'}</div></td>
+        <td style="text-align:center">${it.cantidad||1}</td>
+        <td style="text-align:right">${fmt(it.precio||0)}</td>
+        <td>${fmt(subt)}</td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>
+  <div class="total-box">
+    <div class="total-sub"><span>Subtotal (${items.length} producto${items.length!==1?'s':''})</span><span>${fmt(subtotal)}</span></div>
+    <div class="total-main"><span>TOTAL</span><span>${fmt(v.total||0)}</span></div>
+  </div>
+  <div class="divider"></div>
+  <div class="row"><span class="label">Método de pago</span><span class="bold">${v.metodoPago||v.metodo||'—'}</span></div>
+  ${v.pagoCon?`<div class="row"><span class="label">Pagó con</span><span>${fmt(v.pagoCon)}</span></div>`:''}
+  ${v.cambio?`<div class="row"><span class="label">Cambio</span><span>${fmt(v.cambio)}</span></div>`:''}
+  ${v.puntosGanados>0?`
+  <div class="puntos">⭐ Puntos ganados en esta compra: <strong>+${v.puntosGanados} puntos</strong></div>`:''}
+  <div class="divider"></div>
+  <div class="barcode">${'|'.repeat(40)}</div>
+  <div class="center" style="font-size:10px;color:#888;margin-bottom:4px">${(v.id||'').toUpperCase()}</div>
+  <div class="footer">
+    <strong>¡Gracias por tu compra!</strong><br>
+    Este documento es un comprobante interno de venta.<br>
+    No es una factura electrónica DIAN.
+  </div>
+  <div class="no-print">
+    <button class="btn-p" style="background:#25D366;color:#fff" onclick="if(window.opener&&window.opener.compartirReciboWhatsApp){window.opener.compartirReciboWhatsApp();window.close();}else{window.close();}">💬 WhatsApp</button>
+    <button class="btn-p" style="background:#0077B5;color:#fff" onclick="window.print()">🖨️ Imprimir / PDF</button>
+    <button class="btn-p" style="background:#f0f0f0;color:#333" onclick="window.close()">✕ Cerrar</button>
+  </div>
   </body></html>`;
-  const win = window.open('','_blank');
+  const win = window.open('','_blank','width=480,height=700');
   if(win){ win.document.write(html); win.document.close(); }
-  else toast('Activa las ventanas emergentes para imprimir el recibo','error');
+  else toast('Activa las ventanas emergentes para ver el recibo','error');
 }
 
 // PATCHES
